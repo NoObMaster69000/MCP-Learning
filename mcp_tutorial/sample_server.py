@@ -16,13 +16,17 @@ if not os.path.exists(NOTES_DIR):
     with open(os.path.join(NOTES_DIR, "welcome.md"), "w") as f:
         f.write("# Welcome to MCP\nThis is a sample note in your Knowledge Assistant.")
 
+def _list_notes_logic() -> list[str]:
+    """Helper function to list notes without MCP decorator side effects."""
+    if not os.path.exists(NOTES_DIR):
+        return []
+    return [f for f in os.listdir(NOTES_DIR) if f.endswith('.md')]
+
 @mcp.tool()
 def list_notes() -> list[str]:
     """Lists all markdown notes available in the system."""
     logging.info("Listing notes...")
-    if not os.path.exists(NOTES_DIR):
-        return []
-    return [f for f in os.listdir(NOTES_DIR) if f.endswith('.md')]
+    return _list_notes_logic()
 
 @mcp.tool()
 def read_note(filename: str) -> str:
@@ -48,7 +52,7 @@ def read_note(filename: str) -> str:
 @mcp.resource("notes://index")
 def get_notes_index() -> str:
     """Returns a formatted list of all notes as a resource."""
-    notes = list_notes()
+    notes = _list_notes_logic()
     if not notes:
         return "No notes found."
     return "Available Notes:\n" + "\n".join([f"- {n}" for n in notes])

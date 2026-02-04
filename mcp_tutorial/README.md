@@ -23,6 +23,15 @@ This tutorial is organized into 10 structured Python Notebooks and a practical s
 
 ## 🚀 Getting Started
 
+### Standalone Code Samples
+
+In addition to the notebooks, we've provided standalone Python scripts in the `samples/` directory for practical experimentation:
+
+-   `samples/client_example.py`: A complete MCP client that connects to the sample server.
+-   `samples/low_level_server.py`: Shows how to build a server using the base `mcp` SDK without `FastMCP`.
+-   `samples/sse_server_example.py`: Demonstrates a remote server using the SSE transport.
+-   `samples/advanced_features.py`: Showcases Pydantic models, progress reporting, and resource templates.
+
 ### Prerequisites
 
 - Python 3.10 or higher
