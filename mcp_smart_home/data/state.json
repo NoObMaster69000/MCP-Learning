@@ -1,0 +1,10 @@
+{
+  "lights": {
+    "living_room": false,
+    "kitchen": true,
+    "bedroom": true
+  },
+  "temperature": 22.5,
+  "thermostat": 21.0,
+  "security_armed": false
+}

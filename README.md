@@ -20,3 +20,4 @@ The tutorial is structured as a series of 10 Python notebooks located in the `mc
 
 - `mcp_tutorial/`: Contains 10 Jupyter notebooks covering everything from basics to advanced MCP patterns.
 - `mcp_tutorial/sample_server.py`: A fully functional example of an MCP Knowledge Assistant.
+- `mcp_smart_home/`: A comprehensive, production-style Smart Home Manager project demonstrating state persistence, complex validation, and workflow prompts.
