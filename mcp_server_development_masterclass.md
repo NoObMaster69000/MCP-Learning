@@ -12,6 +12,10 @@
 5. [Lecture 5: Building Your First Server](#lecture-5-building-your-first-server)
 6. [Lecture 6: Tools, Resources & Prompts](#lecture-6-tools-resources--prompts)
 7. [Lecture 6.5: Adding Skills & Integration Guide (Host Setup)](#lecture-65-adding-skills--integration-guide-host-setup)
+   - [Step 1: Develop the Custom Skill (Python)](#step-1-develop-the-custom-skill-python)
+   - [Step 2: Configure Claude Desktop to Use the Skill](#step-2-configure-claude-desktop-to-use-the-skill)
+   - [Step 3: Verify the Integrated Skill](#step-3-verify-the-integrated-skill)
+   - [Step 4: Accessing MCP Programmatically with Client-Side Code (Python Client)](#step-4-accessing-mcp-programmatically-with-client-side-code-python-client)
 8. [Lecture 7: Testing & Debugging](#lecture-7-testing---debugging)
 9. [Lecture 8: Security - The Make-or-Break Phase](#lecture-8-security---the-make-or-break-phase)
 10. [Lecture 9: Production Deployment](#lecture-9-production-deployment)
@@ -686,7 +690,7 @@ Please perform the following reviews:
 
 A **"Skill"** in MCP is simply a custom Tool registered with an MCP server that the AI model can dynamically invoke. Once registered, you integrate the server as a background service in your preferred AI Host (like **Claude Desktop**). The host client reads the server's registered tools and exposes them to the AI model as active skills.
 
-This guide demonstrates how to create a custom **Text Formatting and Sentiment Extraction Skill** and integrate it with Claude Desktop so the AI model can use it.
+This guide demonstrates how to create a custom **Text Formatting and Sentiment Extraction Skill**, integrate it with Claude Desktop, and write custom client-side code to access it programmatically.
 
 ## Step 1: Develop the Custom Skill (Python)
 
@@ -791,6 +795,96 @@ If the file doesn't exist, create it. Add your custom server mapping under `mcpS
 3. **Ask Claude to Use Your Skill**: You do not need to invoke specific JSON commands. Prompt Claude in natural language:
    > *"Claude, can you analyze and format the text 'The service was incredibly fast and excellent' using my custom skills hub?"*
 4. **LLM Invocation**: Claude will recognize the request, matching it against the registered tool parameters, invoke the `analyze_and_format_text` skill, and display the formatted output containing word count, sentiment analysis, and formatted text directly inside the chat interface.
+
+## Step 4: Accessing MCP Programmatically with Client-Side Code (Python Client)
+
+If you are building your own AI application or custom host, you need to connect to the MCP server programmatically from the client side. Below is a complete, production-ready Python script showing how to write a client that spawns the server, negotiates connection capabilities, and calls your custom tool.
+
+```python
+# src/my_mcp_client/client_example.py
+import asyncio
+import os
+import sys
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+async def run_custom_mcp_client():
+    """
+    Spawns the MCP server as a subprocess, connects via stdio,
+    queries available tools, and executes the custom skill programmatically.
+    """
+    print("Initializing programmatic MCP Client...", file=sys.stderr)
+
+    # 1. Configure the server parameters.
+    # The client launches the server as a background subprocess using stdio.
+    # We must use the absolute path to the target server python file.
+    server_script_path = os.path.abspath("src/my_mcp_server/skills.py")
+
+    server_parameters = StdioServerParameters(
+        command=sys.executable,  # Uses the current active python interpreter
+        args=[server_script_path],
+        env=os.environ.copy()     # Copy parent environment variables
+    )
+
+    # 2. Establish connection to the server's standard input/output channels.
+    print(f"Connecting to MCP server at: {server_script_path}...", file=sys.stderr)
+    async with stdio_client(server_parameters) as (read_stream, write_stream):
+        # 3. Instantiate the Client Session.
+        async with ClientSession(read_stream, write_stream) as session:
+            # 4. Perform handshaking initialization.
+            # This negotiates protocol capabilities and protocol version support.
+            print("Performing connection handshake...", file=sys.stderr)
+            await session.initialize()
+            print("Successfully connected and initialized session!", file=sys.stderr)
+
+            # 5. List all available tools exposed by the server.
+            print("\n--- Querying Server Capabilities ---", file=sys.stderr)
+            tools_response = await session.list_tools()
+            available_tools = tools_response.tools
+            print(f"Detected {len(available_tools)} registered tools:", file=sys.stderr)
+            for tool in available_tools:
+                print(f"  - Tool Name: {tool.name}", file=sys.stderr)
+                print(f"    Description: {tool.description}", file=sys.stderr)
+                print(f"    Input Parameters Schema: {tool.inputSchema}", file=sys.stderr)
+
+            # Check if our custom text analyzer skill exists
+            skill_to_call = "analyze_and_format_text"
+            if not any(t.name == skill_to_call for t in available_tools):
+                print(f"Error: Required tool '{skill_to_call}' not found on server.", file=sys.stderr)
+                return
+
+            # 6. Invoke the custom tool/skill programmatically.
+            print(f"\n--- Invoking Tool: '{skill_to_call}' programmatically ---", file=sys.stderr)
+            tool_arguments = {
+                "input_data": {
+                    "text": "The implementation of the Model Context Protocol is clean and extremely fast!",
+                    "uppercase": True
+                }
+            }
+
+            print(f"Sending request arguments: {tool_arguments}", file=sys.stderr)
+            call_result = await session.call_tool(
+                name=skill_to_call,
+                arguments=tool_arguments
+            )
+
+            # 7. Process and output the tool results.
+            print("\n--- Executing Tool Result Summary ---", file=sys.stderr)
+            for content_item in call_result.content:
+                # Inspect the returned content type
+                if content_item.type == "text":
+                    print("Received Response Text:", file=sys.stdout)
+                    print(content_item.text, file=sys.stdout)
+                else:
+                    print(f"Received non-text payload type: {content_item.type}", file=sys.stderr)
+
+if __name__ == "__main__":
+    # Ensure async loop is executed correctly
+    try:
+        asyncio.run(run_custom_mcp_client())
+    except KeyboardInterrupt:
+        print("\nClient terminated by user.", file=sys.stderr)
+```
 
 ---
 

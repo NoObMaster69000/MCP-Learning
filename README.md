@@ -15,7 +15,7 @@ To help developers master the protocol from zero to production-grade, we have ad
     -   *Lecture 4*: Setting Up Your Development Environment (uv, pyproject, layout)
     -   *Lecture 5*: Building Your First Server (FastMCP vs base SDK with commented code)
     -   *Lecture 6*: Tools, Resources & Prompts (Detailed, commented Pydantic & API examples)
-    -   *Lecture 6.5*: **Adding Skills & Integration Guide (Host Setup)** (Exposing skills & host config guide for Claude Desktop)
+    -   *Lecture 6.5*: **Adding Skills & Integration Guide (Host Setup & Client Code)** (Exposing skills, host config guide for Claude Desktop, and full programmatic Python client implementation)
     -   *Lecture 7*: Testing & Debugging (MCP Inspector & automated pytest integration)
     -   *Lecture 8*: Security - The Make-or-Break Phase (Sandboxing, shell injection, approvals)
     -   *Lecture 9*: Production Deployment (Multi-stage Docker, remote streamable HTTP + API key authentication)
