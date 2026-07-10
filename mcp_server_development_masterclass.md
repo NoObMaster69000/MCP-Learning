@@ -11,10 +11,11 @@
 4. [Lecture 4: Setting Up Your Development Environment](#lecture-4-setting-up-your-development-environment)
 5. [Lecture 5: Building Your First Server](#lecture-5-building-your-first-server)
 6. [Lecture 6: Tools, Resources & Prompts](#lecture-6-tools-resources--prompts)
-7. [Lecture 7: Testing & Debugging](#lecture-7-testing---debugging)
-8. [Lecture 8: Security - The Make-or-Break Phase](#lecture-8-security---the-make-or-break-phase)
-9. [Lecture 9: Production Deployment](#lecture-9-production-deployment)
-10. [Lecture 10: Advanced Topics & Future Roadmap](#lecture-10-advanced-topics--future-roadmap)
+7. [Lecture 6.5: Adding Skills & Integration Guide (Host Setup)](#lecture-65-adding-skills--integration-guide-host-setup)
+8. [Lecture 7: Testing & Debugging](#lecture-7-testing---debugging)
+9. [Lecture 8: Security - The Make-or-Break Phase](#lecture-8-security---the-make-or-break-phase)
+10. [Lecture 9: Production Deployment](#lecture-9-production-deployment)
+11. [Lecture 10: Advanced Topics & Future Roadmap](#lecture-10-advanced-topics--future-roadmap)
 
 ---
 
@@ -678,6 +679,118 @@ Please perform the following reviews:
 3. Provide the secured equivalent statement using parameterized or prepared queries.
 """
 ```
+
+---
+
+# Lecture 6.5: Adding Skills & Integration Guide (Host Setup)
+
+A **"Skill"** in MCP is simply a custom Tool registered with an MCP server that the AI model can dynamically invoke. Once registered, you integrate the server as a background service in your preferred AI Host (like **Claude Desktop**). The host client reads the server's registered tools and exposes them to the AI model as active skills.
+
+This guide demonstrates how to create a custom **Text Formatting and Sentiment Extraction Skill** and integrate it with Claude Desktop so the AI model can use it.
+
+## Step 1: Develop the Custom Skill (Python)
+
+Create or update your server file to expose a new tool:
+
+```python
+# src/my_mcp_server/skills.py
+import sys
+from fastmcp import FastMCP
+from pydantic import BaseModel, Field
+
+# Initialize FastMCP server
+mcp = FastMCP("Developer-Skills-Hub")
+
+# Define parameter structure with explicit descriptions
+class TextAnalyzerInput(BaseModel):
+    text: str = Field(description="The target text string to be analyzed and reformatted.")
+    uppercase: bool = Field(default=False, description="Set to True to convert text to uppercase.")
+
+# Register the skill using the @mcp.tool decorator
+@mcp.tool()
+async def analyze_and_format_text(input_data: TextAnalyzerInput) -> str:
+    """
+    Exposes a text analysis skill that computes word count, estimates sentiment,
+    and returns a formatted summary of the input text.
+    """
+    text = input_data.text
+    if not text.strip():
+        return "Error: Empty text provided."
+
+    # Compute word count
+    words = text.split()
+    word_count = len(words)
+
+    # Convert text layout based on argument flags
+    formatted_text = text.upper() if input_data.uppercase else text
+
+    # Simple sentiment estimation logic
+    positive_words = {"good", "great", "excellent", "happy", "love", "awesome", "fast"}
+    negative_words = {"bad", "slow", "error", "failed", "broken", "worst", "sad"}
+
+    pos_score = sum(1 for w in words if w.lower().strip(",.!?") in positive_words)
+    neg_score = sum(1 for w in words if w.lower().strip(",.!?") in negative_words)
+
+    sentiment = "Neutral"
+    if pos_score > neg_score:
+        sentiment = "Positive"
+    elif neg_score > pos_score:
+        sentiment = "Negative"
+
+    # Return structured summary for host ingestion
+    return f"""### Text Analysis Results:
+- **Original Word Count**: {word_count}
+- **Estimated Sentiment**: {sentiment}
+- **Formatted Output**:
+"{formatted_text}"
+"""
+
+def main():
+    # Run server on stdio transport
+    mcp.run()
+
+if __name__ == "__main__":
+    main()
+```
+
+## Step 2: Configure Claude Desktop to Use the Skill
+
+To make this custom skill active in Claude Desktop, register your server in Claude's global configuration file.
+
+### Finding Claude Desktop's Configuration File
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+### Creating the Configuration File
+If the file doesn't exist, create it. Add your custom server mapping under `mcpServers`.
+
+> **Crucial Warning:** You must use **absolute paths** for both the `command` (the python executable in your virtual environment) and your server script arguments. Local relative paths will fail because Claude Desktop runs from its own system directories.
+
+```json
+{
+  "mcpServers": {
+    "developer-skills-hub": {
+      "command": "/Users/yourusername/my-mcp-server/.venv/bin/python",
+      "args": [
+        "/Users/yourusername/my-mcp-server/src/my_mcp_server/skills.py"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+```
+
+*Replace `/Users/yourusername/my-mcp-server/` with the absolute path to your local repository directory.*
+
+## Step 3: Verify the Integrated Skill
+
+1. **Restart Claude Desktop**: Fully quit (Cmd+Q or Alt+F4) and reopen Claude Desktop to trigger a clean capabilities handshake.
+2. **Look for the Hammer Icon**: When starting a new conversation, you should see a small hammer icon 🛠️ in the message box, indicating your custom MCP server has connected successfully.
+3. **Ask Claude to Use Your Skill**: You do not need to invoke specific JSON commands. Prompt Claude in natural language:
+   > *"Claude, can you analyze and format the text 'The service was incredibly fast and excellent' using my custom skills hub?"*
+4. **LLM Invocation**: Claude will recognize the request, matching it against the registered tool parameters, invoke the `analyze_and_format_text` skill, and display the formatted output containing word count, sentiment analysis, and formatted text directly inside the chat interface.
 
 ---
 

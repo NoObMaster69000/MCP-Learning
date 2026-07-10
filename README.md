@@ -8,13 +8,14 @@ The tutorial is structured as a series of 10 Python notebooks located in the `mc
 
 To help developers master the protocol from zero to production-grade, we have added a comprehensive text-based masterclass:
 
--   **[MCP Server Development Masterclass (mcp_server_development_masterclass.md)](mcp_server_development_masterclass.md)**: A complete, fully implemented 10-lecture masterclass that covers:
+-   **[MCP Server Development Masterclass (mcp_server_development_masterclass.md)](mcp_server_development_masterclass.md)**: A complete, fully implemented masterclass that covers:
     -   *Lecture 1*: Introduction to MCP (Why, What, Problem, Concepts)
     -   *Lecture 2*: Architecture & Core Concepts (Host, Client, Server, Connections)
     -   *Lecture 3*: Transports & Protocol Mechanics (JSON-RPC, stdio, Streamable HTTP, SSE)
     -   *Lecture 4*: Setting Up Your Development Environment (uv, pyproject, layout)
     -   *Lecture 5*: Building Your First Server (FastMCP vs base SDK with commented code)
     -   *Lecture 6*: Tools, Resources & Prompts (Detailed, commented Pydantic & API examples)
+    -   *Lecture 6.5*: **Adding Skills & Integration Guide (Host Setup)** (Exposing skills & host config guide for Claude Desktop)
     -   *Lecture 7*: Testing & Debugging (MCP Inspector & automated pytest integration)
     -   *Lecture 8*: Security - The Make-or-Break Phase (Sandboxing, shell injection, approvals)
     -   *Lecture 9*: Production Deployment (Multi-stage Docker, remote streamable HTTP + API key authentication)
