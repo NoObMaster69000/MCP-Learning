@@ -20,6 +20,10 @@
 9. [Lecture 8: Security - The Make-or-Break Phase](#lecture-8-security---the-make-or-break-phase)
 10. [Lecture 9: Production Deployment](#lecture-9-production-deployment)
 11. [Lecture 10: Advanced Topics & Future Roadmap](#lecture-10-advanced-topics--future-roadmap)
+12. [Lecture 11: Composing, Namespacing & Transforms](#lecture-11-composing-namespacing--transforms)
+13. [Lecture 12: Interactive UIs & FastMCP UIs (FastMCPApp)](#lecture-12-interactive-uis--fastmcp-uis-fastmcpapp)
+14. [Lecture 13: Advanced Authentication & Security Gating](#lecture-13-advanced-authentication--security-gating)
+15. [Lecture 14: Next-Gen Utilities: Tasks, Telemetry & Versioning](#lecture-14-next-gen-utilities-tasks-telemetry--versioning)
 
 ---
 
@@ -1169,6 +1173,803 @@ MCP is rapidly evolving. Key initiatives currently driven by the open-source com
 - **Enhanced Multi-Agent Interoperability**: Seamless context swapping when an agent passes an execution chain to another agent sub-node.
 - **Bi-directional Stream Handshakes**: Supporting streaming tool output (e.g., real-time progress on media rendering or complex compilation pipelines).
 - **Global Discovery Hubs**: Centralized, secure registries for verified MCP servers, making it easy to download and spin up local sandboxed server environments on demand.
+
+---
+
+# Lecture 11: Composing, Namespacing & Transforms
+
+As your Model Context Protocol deployments scale from a single server to complex enterprise ecosystems, you will inevitably hit the limit of monolithic code structures. Composing multiple decoupled servers into a unified API gateway, organizing tools using namespaces, and dynamically transforming component signatures are essential production techniques. Standalone FastMCP excels at these workflows through its **Provider** and **Transform** architectures.
+
+```
+                  +----------------------------------+
+                  |           Parent Gateway         |
+                  |          (FastMCP Server)        |
+                  +-----------------+----------------+
+                                    |
+                  +-----------------+----------------+
+                  |            Transforms            |
+                  |  - Namespace    - ToolSearch     |
+                  |  - ToolTransform - *AsTools      |
+                  +-----------------+----------------+
+                                    |
+         +--------------------------+--------------------------+
+         |                                                     |
+         v                                                     v
++--------+---------+                                  +--------+---------+
+|  Child Server A  |                                  |   Proxy Provider |
+|  (LocalProvider) |                                  |  (Remote Server) |
++------------------+                                  +------------------+
+```
+
+---
+
+## 1. Mounting and Composition
+
+FastMCP allows you to compose multiple servers using the `.mount()` method. When you mount a child server, all of its tools, resources, templates, and prompts are linked dynamically to the parent.
+
+```python
+# composition_gateway.py
+import asyncio
+from fastmcp import FastMCP
+
+# Define our parent orchestrator
+gateway = FastMCP("Enterprise-Gateway")
+
+# Define child domain server 1: Database Operations
+db_server = FastMCP("Database-Subserver")
+
+@db_server.tool()
+def get_user_record(user_id: int) -> dict:
+    """Retrieves a database row for a specific user ID."""
+    return {"id": user_id, "status": "active", "tier": "enterprise"}
+
+# Define child domain server 2: Billing & Subscriptions
+billing_server = FastMCP("Billing-Subserver")
+
+@billing_server.tool()
+def process_invoice(user_id: int, amount: float) -> str:
+    """Generates and processes a billing invoice."""
+    return f"Invoice of ${amount:.2f} processed successfully for user #{user_id}."
+
+# Mount both child subservers into our unified parent gateway.
+# Namespacing avoids identifier collision.
+gateway.mount(db_server, namespace="db")
+gateway.mount(billing_server, namespace="billing")
+
+# After composition, clients query a single parent endpoint and see namespaced tools:
+# - db_get_user_record
+# - billing_process_invoice
+```
+
+---
+
+## 2. Proxying External Servers
+
+Composing isn't limited to local Python instances. Using `create_proxy()`, you can mount remote servers running over HTTP/SSE, or external commands running in separate subprocesses (such as standard npm/uvx MCP packages).
+
+```python
+# proxy_composed_server.py
+from fastmcp import FastMCP
+from fastmcp.server import create_proxy
+
+gateway = FastMCP("Multi-Language-Gateway")
+
+# 1. Mount a remote HTTP/SSE weather server
+remote_weather_proxy = create_proxy("https://weather-api.example.com/mcp", name="weather-service")
+gateway.mount(remote_weather_proxy, namespace="weather")
+
+# 2. Mount a local sqlite command-line server via uvx configuration
+sqlite_config = {
+    "mcpServers": {
+        "default": {
+            "command": "uvx",
+            "args": ["mcp-server-sqlite", "--db", "company_records.db"]
+        }
+    }
+}
+sqlite_proxy = create_proxy(sqlite_config, name="sqlite-service")
+gateway.mount(sqlite_proxy, namespace="records")
+
+# 3. Cache Proxy listings to optimize network performance.
+# By default, ProxyProvider caches tool/resource metadata lists to prevent
+# redundant upstream roundtrips. Set cache_ttl to customize or disable (0).
+from fastmcp.server.providers.proxy import ProxyProvider
+# For highly dynamic servers, you can configure a short TTL or turn caching off:
+# proxy_provider = ProxyProvider(lambda: create_client(), cache_ttl=60)
+```
+
+---
+
+## 3. Namespacing and Identifier Mapping
+
+The `Namespace` transform automatically prefixes all component names as they flow through the parent server, ensuring complete isolation.
+
+| Component Type | Unnamespaced | Namespaced with `Namespace("infra")` |
+|----------------|--------------|--------------------------------------|
+| **Tool**       | `check_cpu`  | `infra_check_cpu`                    |
+| **Prompt**     | `analyze`    | `infra_analyze`                      |
+| **Resource**   | `data://sys` | `data://infra/sys`                   |
+| **Template**   | `log://{id}` | `log://infra/{id}`                   |
+
+```python
+from fastmcp.server.transforms import Namespace
+
+# Manually add a Namespace transform to a specific LocalProvider
+from fastmcp.server.providers import LocalProvider
+
+provider = LocalProvider()
+# Prefix everything sourced from this local provider with "api"
+provider.add_transform(Namespace("api"))
+```
+
+---
+
+## 4. Advanced Tool Transformations (`ToolTransform`)
+
+When you mount or proxy a third-party server, you do not control its code. The `ToolTransform` and `ToolTransformConfig` APIs allow you to rename tools, restructure argument properties, hide sensitive variables, or wrap tool execution in custom middleware.
+
+```python
+# tool_refactoring.py
+from fastmcp import FastMCP
+from fastmcp.server.transforms import ToolTransform
+from fastmcp.tools.tool_transform import ToolTransformConfig, ArgTransform, forward
+
+mcp = FastMCP("Refactored-Database-Service")
+
+# Original tool with non-ideal argument naming and exposure
+@mcp.tool()
+def raw_fetch_data_from_db(usr_id: int, p_token: str, limit: int = 50) -> dict:
+    """Low-level database fetch."""
+    return {"user": usr_id, "limit": limit, "auth": p_token != ""}
+
+# Apply a custom ToolTransform to modify the tool schema and argument behavior
+mcp.add_transform(ToolTransform({
+    "raw_fetch_data_from_db": ToolTransformConfig(
+        name="query_db",  # Rename tool
+        description="Safely queries user database records.", # Custom description
+        transform_args={
+            # 1. Rename 'usr_id' to 'user_id' for model readability
+            "usr_id": ArgTransform(name="user_id", description="The target user identifier."),
+            # 2. Hide 'p_token' from the model completely and inject a default factory
+            "p_token": ArgTransform(hide=True, default_factory=lambda: "SECRET_SYSTEM_TOKEN"),
+            # 3. Limit argument can be kept but restricted
+            "limit": ArgTransform(name="page_size", default=10, description="Number of rows to fetch.")
+        }
+    )
+}))
+
+# Clients see:
+# tool: query_db(user_id: integer, page_size: integer = 10)
+# 'p_token' is hidden but automatically injected at runtime.
+```
+
+---
+
+## 5. Tool Search Transforms
+
+When a server contains hundreds or thousands of tools, listing them all in a single `list_tools` call overwhelms the LLM's context window. The `ToolSearch` transform replaces the entire catalog with a search interface—presenting only two synthetic meta-tools to the client:
+1. `search_tools`: Returns matching tool schemas on-demand.
+2. `call_tool`: An execution proxy to invoke a discovered tool by name.
+
+```python
+# scalable_search_server.py
+from fastmcp import FastMCP
+from fastmcp.server.transforms.search import BM25SearchTransform, RegexSearchTransform
+
+# Initialize the server
+mcp = FastMCP("Massive-API-Gateway")
+
+# Add a BM25 Search Transform (ranks tools by semantic relevance using BM25 Okapi)
+mcp.add_transform(BM25SearchTransform(max_results=5))
+
+# Alternatively, you can use a Regex Search Transform for exact matching:
+# mcp.add_transform(RegexSearchTransform(max_results=10))
+
+# Any number of tools can be registered here:
+@mcp.tool()
+def search_invoices(invoice_id: str) -> str:
+    """Retrieve invoicing details."""
+    return f"Invoice data: {invoice_id}"
+
+# The client will only detect:
+# 1. search_tools(query: string)
+# 2. call_tool(name: string, arguments: object)
+```
+
+---
+
+## 6. Resources & Prompts as Tools
+
+Some legacy or highly focused MCP clients only support the `Tools` capability, ignoring resource and prompt listings entirely. The `ResourcesAsTools` and `PromptsAsTools` transforms bridge this compatibility gap by generating equivalent tool mappings.
+
+```python
+# tool_compatibility_bridge.py
+from fastmcp import FastMCP
+from fastmcp.server.transforms import ResourcesAsTools, PromptsAsTools
+
+mcp = FastMCP("Compatibility-Hub")
+
+@mcp.resource("config://app")
+def get_config() -> str:
+    """Application config resource."""
+    return '{"debug": false}'
+
+@mcp.prompt()
+def code_review(code: str) -> str:
+    """Generate code review prompt."""
+    return f"Review this code:\n{code}"
+
+# Convert all resources and prompts to executable tools
+mcp.add_transform(ResourcesAsTools(mcp))
+mcp.add_transform(PromptsAsTools(mcp))
+
+# Now, a tool-only client detects:
+# - list_resources: lists available resource templates
+# - read_resource: reads specific resources by URI
+# - list_prompts: lists available prompt templates
+# - get_prompt: retrieves and renders a prompt template
+```
+
+---
+---
+
+# Lecture 12: Interactive UIs & FastMCP UIs (FastMCPApp)
+
+Model Context Protocol allows tools to go beyond simple text responses. By combining the **MCP Apps extension** (io.modelcontextprotocol/ui) with **Prefab UI components** (built on the `prefab-ui` package), your tools can return fully interactive, reactive user interfaces—such as charts, tables, forms, and custom dashboards—rendered right inside the client conversation window.
+
+```
++--------------------------------------------------------------+
+|                         HOST UI                              |
+|                                                              |
+|  +--------------------------------------------------------+  |
+|  |                    Sandboxed iframe                    |  |
+|  |                                                        |  |
+|  |   [Prefab Renderer / React Application]                 |  |
+|  |   Renders JSON component tree into a beautiful UI      |  |
+|  |                                                        |  |
+|  |         [Select: Region]      [Switch: Target]         |  |
+|  |         [============Bar Chart Widget============]     |  |
+|  |                                                        |  |
+|  +---------------------------+----------------------------+  |
++------------------------------|-------------------------------+
+                               | postMessage API
+                               v
+                     +-------------------+
+                     |    MCP Host/Client|
+                     +---------|---------+
+                               | JSON-RPC (tools/call)
+                               v
+                     +-------------------+
+                     |   FastMCP Server  |
+                     +-------------------+
+```
+
+---
+
+## 1. FastMCPApp Architecture & Lifecycle
+
+`FastMCPApp` is a dedicated Provider class designed for building interactive applications. It separates your UI entry points (`@app.ui()`, which return a `PrefabApp` components canvas and are model-visible) from backend operations (`@app.tool()`, which handle data mutation and are typically hidden from the model).
+
+```python
+# src/my_mcp_server/app.py
+from fastmcp import FastMCP, FastMCPApp
+from prefab_ui.app import PrefabApp
+from prefab_ui.components import Column, Heading, Text, Badge, Row, Button
+from prefab_ui.actions import SetState, ShowToast
+from prefab_ui.actions.mcp import CallTool
+from prefab_ui.rx import RESULT
+
+# 1. Initialize our dedicated MCP application
+app = FastMCPApp("Inventory-Manager")
+inventory_db: list[dict] = [{"id": 1, "name": "Item A", "quantity": 15}]
+
+# 2. Register a backend tool (hidden from the model, visible only to the UI)
+@app.tool()
+def add_inventory_item(name: str, qty: int) -> list[dict]:
+    """Adds an item to the local database and returns updated rows."""
+    inventory_db.append({"id": len(inventory_db) + 1, "name": name, "quantity": qty})
+    return list(inventory_db)
+
+# 3. Register a UI entry-point (visible to the model)
+@app.ui()
+def show_manager_ui() -> PrefabApp:
+    """Renders the inventory management dashboard."""
+    with Column(gap=4, css_class="p-6") as view:
+        Heading("Inventory Manager", level=1)
+        Text("Clicking 'Restock' invokes our backend tool dynamically via CallTool.")
+
+        # Add a button that triggers a backend tool call
+        Button(
+            "Restock Item",
+            on_click=CallTool(
+                add_inventory_item, # Reference function directly for namespace safety
+                arguments={"name": "Restocked Item", "qty": 10},
+                on_success=[
+                    SetState("items", RESULT),
+                    ShowToast("Stock updated!", variant="success")
+                ]
+            )
+        )
+
+    # Return PrefabApp with view and initial state
+    return PrefabApp(view=view, state={"items": list(inventory_db)})
+
+# 4. Bind the app to our main FastMCP Server
+mcp = FastMCP("Office-Management-Server")
+mcp.add_provider(app)
+```
+
+---
+
+## 2. Prefab UI Components and Reactivity
+
+Prefab UI provides over 100 components that compile to a React interface. By using the `Rx` state system, the UI can read and write state in the client browser—running interactive loops instantly without making slow network roundtrips back to your server.
+
+```python
+# reactive_dashboard.py
+from fastmcp import FastMCP
+from prefab_ui.app import PrefabApp
+from prefab_ui.components import Column, Row, Select, SelectOption, Switch, Text, Metric
+from prefab_ui.components.charts import BarChart, ChartSeries
+from prefab_ui.components.control_flow import If
+from prefab_ui.rx import Rx
+
+mcp = FastMCP("Sales-Explorer")
+
+@mcp.tool(app=True) # Shorthand to register a simple tool as a UI app
+def sales_charts() -> PrefabApp:
+    """Provides a interactive sales chart with client-side filters."""
+    east_data = [{"month": "Jan", "sales": 15000}, {"month": "Feb", "sales": 18000}]
+    west_data = [{"month": "Jan", "sales": 8000}, {"month": "Feb", "sales": 12000}]
+
+    # Initialize state dictionary on PrefabApp
+    initial_state = {
+        "region": "east",
+        "east": east_data,
+        "west": west_data,
+        "show_target": True
+    }
+
+    with PrefabApp(state=initial_state) as app:
+        # Determine active data dynamically based on the current 'region' state key
+        with Column(
+            gap=6,
+            css_class="p-6",
+            let={"active_data": "{{ region == 'east' ? east : west }}"}
+        ) as view:
+            with Row(gap=4, align="center"):
+                # Selector writes directly to the 'region' state key on change
+                with Select(name="region", css_class="w-40"):
+                    SelectOption(value="east", label="Eastern Region")
+                    SelectOption(value="west", label="Western Region")
+
+                # Switch toggles boolean target visibility state
+                Switch(name="show_target", css_class="ml-auto")
+                Text("Show Target Line", css_class="text-sm")
+
+            # Render a responsive chart that binds to our reactive let variable
+            BarChart(
+                data=Rx("active_data"),
+                series=[ChartSeries(data_key="sales", label="Monthly Revenue")],
+                x_axis="month"
+            )
+
+            # Conditionally render elements in the browser without server roundtrips
+            with If(Rx("show_target")):
+                Metric(label="Q1 Regional Target", value="$20,000")
+
+    return app
+```
+
+---
+
+## 3. Built-in Capability Providers
+
+FastMCP includes five production-ready interactive providers that can be registered in a single line of code to provide complex user-interaction paradigms.
+
+### A. Drag-And-Drop File Upload (`FileUpload`)
+
+Lets users upload files through an interactive UI zone, bypassing LLM context token limitations.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.apps.file_upload import FileUpload
+
+mcp = FastMCP("Safe-File-Processor")
+
+# Add FileUpload provider (handles storage, listing, and reading)
+file_provider = FileUpload(max_file_size=10 * 1024 * 1024) # 10 MB limit
+mcp.add_provider(file_provider)
+
+# You can access uploaded files in your standard tools
+@mcp.tool()
+async def process_user_upload(filename: str) -> str:
+    """Processes an uploaded file from the secure cache."""
+    # FileUpload stores files scoped by MCP session in-memory by default.
+    # To configure S3 or distributed file storage, subclass FileUpload
+    # and override 'on_store', 'on_list', and 'on_read'.
+    return f"Processed uploaded file: {filename}"
+```
+
+### B. Human-In-The-Loop Approvals (`Approval`)
+
+Binds a security gate around critical tools. The model presents what it's about to do, the user approves or rejects, and the choice is messaged back.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.apps.approval import Approval
+
+mcp = FastMCP("Deploy-System")
+mcp.add_provider(Approval())
+
+# The LLM calls `request_approval` with a summary before taking action.
+# Once the user clicks "Approve", the confirmation is injected back as a message,
+# and the LLM continues safely.
+```
+
+### C. Presenting Clickable Option Buttons (`Choice`)
+
+Instead of asking the user to type a response, present a set of options as clickable buttons.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.apps.choice import Choice
+
+mcp = FastMCP("Interactive-Survey")
+mcp.add_provider(Choice())
+
+# The LLM calls `choose(prompt="...", options=["Tacos", "Pizza"])`.
+# The clicked selection is pushed back to the chat stream.
+```
+
+### D. Form Input from Pydantic Models (`FormInput`)
+
+Generates a validated input form from any Pydantic model class.
+
+```python
+from pydantic import BaseModel, Field
+from fastmcp import FastMCP
+from fastmcp.apps.form import FormInput
+
+class ContactCard(BaseModel):
+    name: str = Field(description="Full name")
+    email: str = Field(description="Valid email address")
+    subscribe: bool = Field(default=True, description="Subscribe to updates")
+
+mcp = FastMCP("Directory-Server")
+
+# Add a form provider. On submit, validations run in the browser.
+mcp.add_provider(FormInput(
+    model=ContactCard,
+    title="Add New Contact",
+    submit_text="Create Card",
+    # Pass an optional callback to handle the validated Pydantic model instance
+    on_submit=lambda card: f"Created contact: {card.name} ({card.email})"
+))
+```
+
+### E. Generative UI (`GenerativeUI`)
+
+Empowers the LLM to write its own Prefab Python code at runtime. The user watches the components stream in as Pyodide executes the script progressively in the browser.
+
+```python
+from fastmcp import FastMCP
+from fastmcp.apps.generative import GenerativeUI
+
+mcp = FastMCP("Studio-Server")
+
+# Registers 'generate_prefab_ui' (executes Python in a sandboxed Pyodide frame)
+# and 'search_prefab_components' (introspects available Prefab UI classes)
+mcp.add_provider(GenerativeUI())
+```
+
+---
+---
+
+# Lecture 13: Advanced Authentication & Security Gating
+
+When deploying Model Context Protocol servers over remote HTTP transports, security is paramount. Since MCP clients expect to register automatically (via Dynamic Client Registration), traditional OAuth 2.0 architectures must be bridged safely. Standalone FastMCP provides robust security mitigations and first-class IDP integrations to protect your system.
+
+---
+
+## 1. The OAuth Proxy & Token Factory
+
+Traditional OAuth providers (GitHub, Google, Azure, AWS, Auth0) require manual registration and fixed redirect URIs, making them incompatible with MCP clients that use dynamic localhost ports. FastMCP's **OAuth Proxy** bridges this gap: it presents a DCR-compliant interface to MCP clients while proxying credentials upstream.
+
+```
+                      +-------------------+
+                      |     MCP Client    |
+                      | (localhost:54321) |
+                      +---------+---------+
+                                |
+                     1. register| (DCR)
+                                v
++------------------+  2. auth   +-------------------+  3. proxy auth +------------------+
+|                  |<-----------|  FastMCP Server   |--------------->|   Upstream IdP   |
+|   OAuth User     |  redirect  |    (OAuth Proxy)  |    redirect    |  (GitHub, etc.)  |
+|                  |----------->|  (server:8000)    |<---------------|                  |
++------------------+  4. approve+---------+---------+   5. auth code +------------------+
+                                          |
+                                          | 6. exchange
+                                          v
+                                +-------------------+
+                                |  Issued JWT Token |
+                                | (Aud: mcp-server) |
+                                +-------------------+
+```
+
+### The Token Factory Architecture (Preventing Token Passthrough)
+
+To comply with **MCP Security Best Practices**, the OAuth Proxy implements a Token Factory: **it never forwards the upstream identity provider's token to the client**.
+
+1. The proxy receives the upstream token (e.g. from GitHub).
+2. It encrypts and stores the upstream token inside a secure, persistent storage backend (e.g. Redis) using **Fernet encryption**.
+3. It issues a fresh, minimal **FastMCP JWT** to the client. This token is scoped exclusively to your MCP server (`aud: your-mcp-server`), preventing the client from ever accessing or exfiltrating your upstream provider credentials.
+
+```python
+# secure_github_gateway.py
+import os
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.github import GitHubProvider
+from key_value.aio.stores.redis import RedisStore
+from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
+from cryptography.fernet import Fernet
+
+# 1. Initialize encrypted, persistent storage for OAuth sessions and registrations.
+# Never store raw secrets in plaintext or local memory on production.
+encryption_wrapper = FernetEncryptionWrapper(
+    key_value=RedisStore(host="redis.internal", port=6379),
+    fernet=Fernet(os.environ["STORAGE_ENCRYPTION_KEY"]) # 32-byte url-safe base64 key
+)
+
+# 2. Configure the GitHub Provider.
+# It acts as an OAuthProxy, managing flow redirects and issuing secure local JWTs.
+auth_provider = GitHubProvider(
+    client_id=os.environ["GITHUB_CLIENT_ID"],
+    client_secret=os.environ["GITHUB_CLIENT_SECRET"],
+    base_url="https://mcp-gateway.production.com", # Public HTTPS URL
+
+    # Secure Token Management parameters (Mandatory for Production)
+    jwt_signing_key=os.environ["JWT_SIGNING_KEY"], # Signs the issued FastMCP JWTs
+    client_storage=encryption_wrapper,             # Encrypted session cache
+)
+
+# 3. Create our secure server
+mcp = FastMCP("Protected-Gateway", auth=auth_provider)
+```
+
+---
+
+## 2. Client ID Metadata Documents (CIMD)
+
+**CIMD** (Client ID Metadata Documents) is an alternative to Dynamic Client Registration. Instead of generating client registrations on the fly, the client hosts a static JSON metadata file at a public HTTPS URL. That URL serves as the client's verified identity.
+
+```json
+// https://myapp.example.com/oauth/client.json
+{
+  "client_id": "https://myapp.example.com/oauth/client.json",
+  "client_name": "Verified Corporate Client",
+  "redirect_uris": ["http://localhost:*/callback"],
+  "token_endpoint_auth_method": "private_key_jwt",
+  "jwks_uri": "https://myapp.example.com/.well-known/jwks.json"
+}
+```
+
+The OAuth Proxy validates this file against the hosting domain, displaying a **verified domain badge** on the user consent screen, preventing phishing and spoofing attempts.
+
+### Private Key JWT Authentication (`private_key_jwt`)
+
+For high-security corporate clients, CIMD supports `private_key_jwt` (defined in RFC 7523). Instead of sending a static client secret, the client signs a transient JWT assertion using its private key. The OAuth Proxy fetches the client's public keys (`jwks_uri` or inline `jwks` in the CIMD) to verify the assertion, preventing credential replay attacks via automatic JTI tracking.
+
+---
+
+## 3. Strict JWT Validation and Opaque Token Introspection
+
+For servers acting as resource servers, FastMCP provides robust verifiers that can be layered via `MultiAuth`.
+
+### Symmetric (HMAC) & Asymmetric JWT Verification (`JWTVerifier`)
+
+```python
+from fastmcp.server.auth.providers.jwt import JWTVerifier
+
+# Asymmetric validation using JWKS (OpenID Connect public keys)
+jwt_verifier = JWTVerifier(
+    jwks_uri="https://auth.company.com/.well-known/jwks.json",
+    issuer="https://auth.company.com",
+    audience="my-mcp-resource-server",
+    required_scopes=["read:reports"]
+)
+```
+
+### Opaque Token Introspection (`IntrospectionTokenVerifier`)
+
+When identity providers issue opaque (non-JWT) strings, validation requires querying the provider's token introspection endpoint (RFC 7662).
+
+```python
+from fastmcp.server.auth.providers.introspection import IntrospectionTokenVerifier
+
+opaque_verifier = IntrospectionTokenVerifier(
+    introspection_url="https://auth.company.com/oauth/introspect",
+    client_id="mcp-resource-server",
+    client_secret=os.environ["INTROSPECT_CLIENT_SECRET"],
+    client_auth_method="client_secret_basic", # or client_secret_post
+    required_scopes=["admin:write"]
+)
+```
+
+---
+
+## 4. Confused Deputy and AS-in-the-Middle Protections
+
+In multi-tenant or shared environments, an attacker can register a malicious client redirecting to their server, then trick a victim into authorizing the shared OAuth application.
+
+FastMCP mitigates this through:
+1. **Mandatory Consent Screens**: Displays the client's name, registered redirect URIs, and requested scopes. This is shown on every authorization flow by default (`require_authorization_consent=True`).
+2. **Cryptographic Browser Binding**: Upon approval, FastMCP sets a signed cookie binding the active browser session to the transaction. If an attacker intercepts the callback code, they cannot exchange it from a different browser because the session-binding cookie will be missing, raising a 403 error.
+
+---
+---
+
+# Lecture 14: Next-Gen Utilities: Tasks, Telemetry & Versioning
+
+To run world-class, production-grade Model Context Protocol deployments, your systems must support long-running execution without blocking, provide distributed diagnostic instrumentation, and handle seamless API version migrations. Standalone FastMCP introduces robust primitives for these next-gen patterns.
+
+---
+
+## 1. Protocol-Native Background Tasks (SEP-1686)
+
+In standard MCP, all tool calls are blocking. If a task takes minutes (e.g. data exporting or code compilation), the client connection hangs or times out. The **MCP background task protocol (SEP-1686)** allows servers to execute operations asynchronously.
+
+FastMCP implements this using **Docket** (a high-performance, enterprise-grade task scheduler designed to process millions of tasks daily with Redis).
+
+```
+                      +-------------------+
+                      |     MCP Client    |
+                      +---------+---------+
+                                |
+                   1. call_tool | (task=True)
+                                v
+                      +-------------------+
+                      |   FastMCP Server  |
+                      +---------+---------+
+                                |
+                 2. enqueue     | 3. returns Task ID immediately
+                 (Redis/Memory) v
++------------------+  4. fetch  +-------------------+  5. status polling+------------------+
+|  Docket Worker   |<-----------|  Shared Database  |<------------------|    MCP Client    |
+| (process/cloud)  |            |   (Redis Queue)   |   & progress      |                  |
++------------------+            +-------------------+                   +------------------+
+```
+
+### Step 1: Define the Asynchronous Task Server
+
+```python
+# task_server.py
+import asyncio
+from datetime import timedelta
+from fastmcp import FastMCP
+from fastmcp.dependencies import Progress
+from fastmcp.server.tasks import TaskConfig
+
+# Configure FastMCP to use Redis backend for distributed task execution.
+# To run locally in-memory (no persistence), use "memory://"
+mcp = FastMCP("Task-Gateway")
+
+# Configure a tool to support optional or required background execution
+@mcp.tool(task=TaskConfig(mode="optional", poll_interval=timedelta(seconds=2)))
+async def process_dataset(data: str, progress: Progress = Progress()) -> str:
+    """Processes a heavy dataset asynchronously with progress updates."""
+    # 1. Declare total work steps to the progress reporter
+    total_steps = 100
+    await progress.set_total(total_steps)
+
+    for i in range(total_steps):
+        # ... perform dataset chunk processing logic ...
+        await asyncio.sleep(0.1)
+
+        # 2. Update progress and messages dynamically
+        await progress.set_message(f"Analyzing chunk {i+1}/{total_steps}")
+        await progress.increment()
+
+    return f"Successfully processed {total_steps} chunks."
+```
+
+### Step 2: Running Distributed Workers
+
+In production, you can scale execution horizontally by running separate background workers using the FastMCP CLI:
+
+```bash
+# Configure the shared Docket URL to use Redis
+export FASTMCP_DOCKET_URL="redis://redis.internal:6379"
+
+# Start the main server process
+fastmcp run task_server.py --transport http --port 8000 &
+
+# Spawn multiple isolated workers to handle background task loads
+fastmcp tasks worker task_server.py --concurrency 5 &
+```
+
+*Docket workers automatically pull tasks from the Redis queue, update task statuses, and handle automatic retries or timeouts.*
+
+---
+
+## 2. OpenTelemetry Tracing and Observability
+
+FastMCP implements native **OpenTelemetry (OTel)** instrumentation. It automatically generates spans for every MCP request (`tools/call`, `resources/read`, `prompts/get`), tracking execution latency, database operations, and provider delegation chains.
+
+```python
+# observable_server.py
+from fastmcp import FastMCP
+from fastmcp.telemetry import get_tracer
+
+mcp = FastMCP("Observable-Database")
+
+@mcp.tool()
+async def query_user_portfolio(user_id: int) -> dict:
+    """Retrieves and compiles a user's portfolio."""
+    # Access the FastMCP tracer to record sub-operation spans
+    tracer = get_tracer()
+
+    # 1. Record database query span
+    with tracer.start_as_current_span("db.fetch_assets") as span:
+        span.set_attribute("db.user_id", user_id)
+        # ... perform query ...
+        assets = [{"symbol": "AAPL", "qty": 10}, {"symbol": "MSFT", "qty": 5}]
+        span.set_attribute("db.results_count", len(assets))
+
+    # 2. Record API pricing fetch span
+    with tracer.start_as_current_span("api.fetch_pricing") as span:
+        # ... query market pricing ...
+        pass
+
+    return {"user_id": user_id, "portfolio": assets}
+```
+
+Run with the standard OpenTelemetry instrument wrapper to export traces directly to your APM backend (e.g. Jaeger, Datadog, or Honeycomb):
+
+```bash
+export OTEL_SERVICE_NAME="mcp-observable-db"
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://jaeger.internal:4317"
+
+opentelemetry-instrument fastmcp run observable_server.py
+```
+
+---
+
+## 3. Component Versioning and Routing
+
+When upgrading tool schemas or resource formats, you must support legacy clients while letting new clients access enhanced capabilities. FastMCP's **VersionFilter** transform allows you to serve multiple API versions from a single codebase.
+
+```python
+# versioned_api.py
+from fastmcp import FastMCP
+from fastmcp.server.providers import LocalProvider
+from fastmcp.server.transforms import VersionFilter
+
+# 1. Define versioned components on a shared LocalProvider
+components = LocalProvider()
+
+@components.tool(version="1.0")
+def fetch_user_data(user_id: int) -> dict:
+    """Legacy v1.0 fetch (returns limited fields)."""
+    return {"id": user_id, "name": "Alice"}
+
+@components.tool(version="2.0")
+def fetch_user_data(user_id: int, include_billing: bool = False) -> dict:
+    """Modern v2.0 fetch (supports optional billing details)."""
+    return {"id": user_id, "name": "Alice", "billing_active": include_billing}
+
+# 2. Expose distinct versioned API gateways using VersionFilter transforms
+# v1.0 Gateway: Exposes only components with versions < 2.0
+mcp_v1 = FastMCP("API-v1", providers=[components])
+mcp_v1.add_transform(VersionFilter(version_lt="2.0"))
+
+# v2.0 Gateway: Exposes only components with versions >= 2.0
+mcp_v2 = FastMCP("API-v2", providers=[components])
+mcp_v2.add_transform(VersionFilter(version_gte="2.0"))
+```
+
+*Version matching supports semantic PEP 440 formatting (e.g., `"1.0a1" < "1.0b1" < "1.0"`) and falls back to lexicographic string comparison for non-standard schemes like ISO dates.*
 
 ---
 *End of Masterclass. Keep building safe and powerful servers!*

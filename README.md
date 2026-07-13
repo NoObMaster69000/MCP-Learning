@@ -20,6 +20,10 @@ To help developers master the protocol from zero to production-grade, we have ad
     -   *Lecture 8*: Security - The Make-or-Break Phase (Sandboxing, shell injection, approvals)
     -   *Lecture 9*: Production Deployment (Multi-stage Docker, remote streamable HTTP + API key authentication)
     -   *Lecture 10*: Advanced Topics & Future Roadmap (Sampling, dynamic resources, pagination, evolution)
+    -   *Lecture 11*: Composing, Namespacing & Transforms (Mounting, proxying remote servers, namespacing, ToolTransform/search/AsTools)
+    -   *Lecture 12*: Interactive UIs & FastMCP UIs (FastMCPApp architecture, Prefab UI elements, Reactivity with Rx, built-in FileUpload/Approval/Choice/FormInput/GenerativeUI)
+    -   *Lecture 13*: Advanced Authentication & Security Gating (OAuth Proxies, Token Factory encrypted storage, Client ID Metadata Documents, Private Key JWT, Opaque Introspection, Confused Deputy protection)
+    -   *Lecture 14*: Next-Gen Utilities: Tasks, Telemetry & Versioning (Docket Background Tasks with SEP-1686, OpenTelemetry tracing spans, component VersionFilter routing)
 
 ## Quick Start
 
